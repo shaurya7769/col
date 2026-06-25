@@ -1,71 +1,78 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ═══════════════════════════════════════════════════════════════
-# Escape Skate Platform — Raspberry Pi 3B+ Setup Script
-# ═══════════════════════════════════════════════════════════════
-# Run as root: sudo bash setup_pi.sh
-# No domain needed — runs on Pi's local IP, port 80 → 5000
-# Domain/SSL is the next step.
-# ═══════════════════════════════════════════════════════════════
-
 REPO_DIR="/opt/escape"
 GIT_REPO="https://github.com/shaurya7769/col.git"
 BRANCH="main"
+START_TS=$(date +%s)
 
-# Auto-detect Pi's IP
+step_start=""
+step_num=0
+
+log() { echo -e "$(date '+%H:%M:%S') $*"; }
+
+step() {
+  [ -n "$step_start" ] && elapsed=$(($(date +%s) - step_start)) && log "  └─ Done (${elapsed}s)"
+  step_num=$((step_num + 1))
+  step_start=$(date +%s)
+  log ""
+  log "━━━ [$step_num/8] $* ━━━"
+}
+
+ok() { log "  ✓ $*"; }
+
 PI_IP=$(hostname -I | awk '{print $1}')
 [ -z "$PI_IP" ] && PI_IP="<this-pi-ip>"
 
-echo "═══════════════════════════════════════════════"
-echo "  Escape Skate Platform — Pi Setup"
-echo "═══════════════════════════════════════════════"
-echo "  Target:  $REPO_DIR"
-echo "  Git:     $GIT_REPO ($BRANCH)"
-echo "  Pi IP:   $PI_IP"
-echo "  Mode:    LOCAL (no domain, HTTP only)"
-echo ""
+log "═══════════════════════════════════════════════"
+log "  Escape Skate Platform — Pi Setup"
+log "  Started: $(date)"
+log "═══════════════════════════════════════════════"
+log "  Target:  $REPO_DIR"
+log "  Git:     $GIT_REPO ($BRANCH)"
+log "  Pi IP:   $PI_IP"
+log ""
 
-# ── 1. System packages ───────────────────────────────────────
-echo "[1/8] Updating system packages..."
-apt-get update -qq
-apt-get upgrade -y -qq
+# ── 1. Update system packages ──────────────────────────────
+step "Updating system packages"
+log "  This may take 5-15 minutes on a Pi (downloading + upgrading)"
+apt-get update -y 2>&1 | awk '{print "  " $0}'
+apt-get upgrade -y 2>&1 | awk '{print "  " $0}'
+ok "System packages updated"
 
-echo "[2/8] Installing dependencies..."
-apt-get install -y -qq \
-  curl gnupg build-essential git \
-  nginx sqlite3 ufw
+# ── 2. Install dependencies ────────────────────────────────
+step "Installing system dependencies"
+log "  curl, git, nginx, sqlite3, ufw, build tools..."
+apt-get install -y curl gnupg build-essential git nginx sqlite3 ufw 2>&1 | awk '{print "  " $0}'
+ok "Dependencies installed"
 
-# ── 2. Node.js 20 ────────────────────────────────────────────
-echo "[3/8] Installing Node.js 20..."
+# ── 3. Node.js 20 ──────────────────────────────────────────
+step "Installing Node.js 20"
 if ! command -v node &>/dev/null; then
   curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-  apt-get install -y -qq nodejs
+  apt-get install -y nodejs 2>&1 | tail -3 | awk '{print "  " $0}'
 fi
-echo "  Node: $(node -v) | npm: $(npm -v)"
+ok "Node: $(node -v) | npm: $(npm -v)"
 
-# ── 3. Clone repo ────────────────────────────────────────────
-echo "[4/8] Cloning project..."
+# ── 4. Clone repo ──────────────────────────────────────────
+step "Cloning project from GitHub"
 if [ -d "$REPO_DIR" ]; then
-  echo "  Repo exists — pulling latest..."
+  log "  Repo exists — pulling latest..."
   cd "$REPO_DIR"
-  git fetch origin
-  git reset --hard "origin/$BRANCH"
+  git fetch origin 2>&1 | awk '{print "  " $0}'
+  git reset --hard "origin/$BRANCH" 2>&1 | awk '{print "  " $0}'
 else
-  git clone --branch "$BRANCH" --depth 1 "$GIT_REPO" "$REPO_DIR"
+  git clone --branch "$BRANCH" --depth 1 "$GIT_REPO" "$REPO_DIR" 2>&1 | awk '{print "  " $0}'
 fi
+ok "Repo ready at $REPO_DIR"
 
-# ── 4. Runtime directories ────────────────────────────────────
-echo "[5/8] Creating runtime directories..."
-mkdir -p "$REPO_DIR/backend/data" \
-         "$REPO_DIR/backend/uploads" \
-         "$REPO_DIR/logs"
+# ── 5. Directories + .env ─────────────────────────────────
+step "Creating directories and .env"
+mkdir -p "$REPO_DIR/backend/data" "$REPO_DIR/backend/uploads" "$REPO_DIR/logs"
+ok "Directories created"
 
-# ── 5. Configure .env ─────────────────────────────────────────
-echo "[6/8] Configuring environment..."
 JWT_SECRET=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")
 BASE_URL="http://$PI_IP"
-
 cat > "$REPO_DIR/backend/.env" << ENVEOF
 NODE_ENV=production
 PORT=5000
@@ -79,30 +86,35 @@ RATE_LIMIT_WINDOW_MS=900000
 RATE_LIMIT_MAX=100
 LOGIN_RATE_LIMIT_MAX=10
 ENVEOF
-echo "  JWT secret generated, BASE_URL=$BASE_URL"
+ok "JWT secret generated, BASE_URL=$BASE_URL"
 
-# ── 6. Install backend deps + seed DB ─────────────────────────
-echo "[7/8] Installing backend dependencies..."
+# ── 6. Backend ─────────────────────────────────────────────
+step "Installing backend dependencies (npm install)"
 cd "$REPO_DIR/backend"
-npm install --omit=dev --no-audit --no-fund
+log "  Installing production npm packages..."
+npm install --omit=dev --no-audit --no-fund 2>&1 | awk '{print "  " $0}'
+ok "Backend dependencies installed"
 
-echo "  Setting up database..."
-node scripts/setup_sqlite.js
+step "Setting up database"
+node scripts/setup_sqlite.js 2>&1 | awk '{print "  " $0}'
+ok "Database seeded"
 
-# ── 7. Build frontend ─────────────────────────────────────────
-echo "  Building frontend..."
+# ── 7. Frontend ────────────────────────────────────────────
+step "Building frontend (npm install + vite build)"
 cd "$REPO_DIR/frontend"
-npm install --no-audit --no-fund
-npm run build
+log "  Installing frontend npm packages..."
+npm install --no-audit --no-fund 2>&1 | awk '{print "  " $0}'
+ok "Frontend dependencies installed"
 
-# ── 8. PM2 + nginx (HTTP only) ────────────────────────────────
-echo "[8/8] Configuring PM2 + nginx..."
+log "  Building production bundle (vite)..."
+npm run build 2>&1 | awk '{print "  " $0}'
+ok "Frontend built"
 
-# PM2
-echo "  → Installing PM2..."
-npm install -g pm2
+# ── 8. PM2 + nginx + firewall + verify ────────────────────
+step "Configuring PM2"
+npm install -g pm2 2>&1 | tail -3 | awk '{print "  " $0}'
+ok "PM2 installed"
 
-echo "  → Starting app via PM2..."
 cat > "$REPO_DIR/deploy/ecosystem.config.js" << 'PM2EOF'
 module.exports = {
   apps: [{
@@ -135,9 +147,9 @@ PM2EOF
 pm2 start "$REPO_DIR/deploy/ecosystem.config.js" --env production
 pm2 save
 pm2 startup systemd -u root --hp /root 2>/dev/null || true
+ok "PM2 app started and saved"
 
-# nginx — HTTP only, reverse proxy to port 5000
-echo "  → Configuring nginx (HTTP)..."
+step "Configuring nginx (HTTP only)"
 cat > /etc/nginx/sites-available/escape << NGINXEOF
 server {
     listen 80;
@@ -178,66 +190,70 @@ NGINXEOF
 
 ln -sf /etc/nginx/sites-available/escape /etc/nginx/sites-enabled/
 rm -f /etc/nginx/sites-enabled/default
-nginx -t && systemctl reload nginx
+nginx -t 2>&1 | awk '{print "  " $0}'
+systemctl reload nginx
+ok "nginx configured and reloaded"
 
-# Firewall
-echo "  → Configuring firewall..."
-ufw --force reset
-ufw default deny incoming
-ufw default allow outgoing
-ufw allow 22/tcp
-ufw allow 80/tcp
-ufw --force enable
+step "Configuring firewall"
+ufw --force reset 2>&1 | tail -2 | awk '{print "  " $0}'
+ufw default deny incoming 2>&1 | tail -1 | awk '{print "  " $0}'
+ufw default allow outgoing 2>&1 | tail -1 | awk '{print "  " $0}'
+ufw allow 22/tcp 2>&1 | tail -1 | awk '{print "  " $0}'
+ufw allow 80/tcp 2>&1 | tail -1 | awk '{print "  " $0}'
+ufw --force enable 2>&1 | tail -2 | awk '{print "  " $0}'
+ok "Firewall active (SSH + HTTP)"
 
-# ── Verify ────────────────────────────────────────────────────
-echo ""
-echo "  → Verifying deployment..."
-sleep 2
+# ── Verify ─────────────────────────────────────────────────
+step "Verifying deployment"
+sleep 3
 
-# Check PM2
 if pm2 show escape-api &>/dev/null; then
-  echo "  ✅ PM2 process 'escape-api' is running"
+  ok "PM2 process 'escape-api' is running"
 else
-  echo "  ❌ PM2 process not found — check 'pm2 status'"
+  log "  ⚠ PM2 process not found — check 'pm2 status'"
 fi
 
-# Check backend responds
-if curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:5000/api/feed 2>/dev/null | grep -qE '^(200|401)$'; then
-  echo "  ✅ Backend API responds on http://127.0.0.1:5000"
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:5000/api/feed 2>/dev/null || echo "000")
+if echo "$HTTP_CODE" | grep -qE '^(200|401)$'; then
+  ok "Backend API responds on http://127.0.0.1:5000 (HTTP $HTTP_CODE)"
 else
-  echo "  ⚠️  Backend API not responding yet — may need a moment"
+  log "  ⚠ Backend returned HTTP $HTTP_CODE — may need a moment"
 fi
 
-# Check nginx serves frontend
-if curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1/ 2>/dev/null | grep -q "200"; then
-  echo "  ✅ nginx serves frontend on port 80"
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1/ 2>/dev/null || echo "000")
+if [ "$HTTP_CODE" = "200" ]; then
+  ok "nginx serves frontend on http://127.0.0.1 (HTTP $HTTP_CODE)"
 else
-  echo "  ⚠️  nginx not serving frontend yet"
+  log "  ⚠ Frontend returned HTTP $HTTP_CODE — check nginx"
 fi
 
-echo ""
-echo "═══════════════════════════════════════════════"
-echo "  Setup complete!"
-echo "═══════════════════════════════════════════════"
-echo ""
-echo "  Access the app:"
-echo "    http://$PI_IP"
-echo ""
-echo "  Demo accounts:"
-echo "    Admin:  admin@escape.app / CoachPass1!"
-echo "    Coach:  alex@skate.academy / CoachPass1!"
-echo "    Student: student@skate.academy / StudentPass1!"
-echo ""
-echo "  Login: enter email → check OTP in PM2 logs → enter code"
-echo "    pm2 logs escape-api --lines 20"
-echo ""
-echo "  Management:"
-echo "    pm2 status              → Process status"
-echo "    pm2 logs escape-api     → View logs (OTP codes here)"
-echo "    pm2 restart escape-api  → Restart"
-echo "    pm2 stop escape-api     → Stop"
-echo ""
-echo "  Next step (domain + SSL):"
-echo "    sudo bash $REPO_DIR/deploy/step2_domain.sh your-domain.com"
-echo ""
-echo "═══════════════════════════════════════════════"
+TOTAL=$(($(date +%s) - START_TS))
+MIN=$((TOTAL / 60))
+SEC=$((TOTAL % 60))
+
+log ""
+log "═══════════════════════════════════════════════"
+log "  Setup complete! (${MIN}m ${SEC}s total)"
+log "═══════════════════════════════════════════════"
+log ""
+log "  Access the app:"
+log "    http://$PI_IP"
+log ""
+log "  Demo accounts:"
+log "    Admin:  admin@escape.app / CoachPass1!"
+log "    Coach:  alex@skate.academy / CoachPass1!"
+log "    Student: student@skate.academy / StudentPass1!"
+log ""
+log "  Login: enter email → check OTP in logs → enter code"
+log "    pm2 logs escape-api --lines 20"
+log ""
+log "  Commands:"
+log "    pm2 status              → Process status"
+log "    pm2 logs escape-api     → View logs (OTP codes)"
+log "    pm2 restart escape-api  → Restart"
+log "    pm2 stop escape-api     → Stop"
+log ""
+log "  Next step (domain + SSL):"
+log "    sudo bash $REPO_DIR/deploy/step2_domain.sh your-domain.com"
+log ""
+log "═══════════════════════════════════════════════"

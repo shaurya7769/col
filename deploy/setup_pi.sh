@@ -4,46 +4,48 @@ set -euo pipefail
 # ═══════════════════════════════════════════════════════════════
 # Escape Skate Platform — Raspberry Pi 3B+ Setup Script
 # ═══════════════════════════════════════════════════════════════
-# Run as: sudo bash setup_pi.sh <your-domain.com>
-# Example: sudo bash setup_pi.sh skate.example.com
+# Run as root: sudo bash setup_pi.sh
+# No domain needed — runs on Pi's local IP, port 80 → 5000
+# Domain/SSL is the next step.
 # ═══════════════════════════════════════════════════════════════
 
 REPO_DIR="/opt/escape"
-DOMAIN="${1:-escape.example.com}"
 GIT_REPO="https://github.com/shaurya7769/col.git"
 BRANCH="main"
-PI_USER="${SUDO_USER:-$USER}"
+
+# Auto-detect Pi's IP
+PI_IP=$(hostname -I | awk '{print $1}')
+[ -z "$PI_IP" ] && PI_IP="<this-pi-ip>"
 
 echo "═══════════════════════════════════════════════"
 echo "  Escape Skate Platform — Pi Setup"
 echo "═══════════════════════════════════════════════"
-echo "  Domain:     $DOMAIN"
-echo "  Target:     $REPO_DIR"
-echo "  Git repo:   $GIT_REPO"
-echo "  Pi user:    $PI_USER"
+echo "  Target:  $REPO_DIR"
+echo "  Git:     $GIT_REPO ($BRANCH)"
+echo "  Pi IP:   $PI_IP"
+echo "  Mode:    LOCAL (no domain, HTTP only)"
 echo ""
 
 # ── 1. System packages ───────────────────────────────────────
-echo "[1/9] Updating system packages..."
+echo "[1/8] Updating system packages..."
 apt-get update -qq
 apt-get upgrade -y -qq
 
-echo "[2/9] Installing dependencies..."
+echo "[2/8] Installing dependencies..."
 apt-get install -y -qq \
   curl gnupg build-essential git \
-  nginx certbot python3-certbot-nginx sqlite3 \
-  ufw
+  nginx sqlite3 ufw
 
-# ── 3. Node.js 20 ────────────────────────────────────────────
-echo "[3/9] Installing Node.js 20..."
+# ── 2. Node.js 20 ────────────────────────────────────────────
+echo "[3/8] Installing Node.js 20..."
 if ! command -v node &>/dev/null; then
   curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
   apt-get install -y -qq nodejs
 fi
 echo "  Node: $(node -v) | npm: $(npm -v)"
 
-# ── 4. Clone / pull repo ────────────────────────────────────
-echo "[4/9] Cloning project from GitHub..."
+# ── 3. Clone repo ────────────────────────────────────────────
+echo "[4/8] Cloning project..."
 if [ -d "$REPO_DIR" ]; then
   echo "  Repo exists — pulling latest..."
   cd "$REPO_DIR"
@@ -53,15 +55,16 @@ else
   git clone --branch "$BRANCH" --depth 1 "$GIT_REPO" "$REPO_DIR"
 fi
 
-# ── 5. Create runtime directories ────────────────────────────
-echo "[5/9] Creating runtime directories..."
+# ── 4. Runtime directories ────────────────────────────────────
+echo "[5/8] Creating runtime directories..."
 mkdir -p "$REPO_DIR/backend/data" \
          "$REPO_DIR/backend/uploads" \
          "$REPO_DIR/logs"
 
-# ── 6. Configure environment ────────────────────────────────
-echo "[6/9] Configuring .env..."
+# ── 5. Configure .env ─────────────────────────────────────────
+echo "[6/8] Configuring environment..."
 JWT_SECRET=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")
+BASE_URL="http://$PI_IP"
 
 cat > "$REPO_DIR/backend/.env" << ENVEOF
 NODE_ENV=production
@@ -70,36 +73,36 @@ HOST=0.0.0.0
 JWT_SECRET=$JWT_SECRET
 DB_PATH=$REPO_DIR/backend/data/escape.db
 UPLOAD_DIR=$REPO_DIR/backend/uploads
-BASE_URL=https://$DOMAIN
-ALLOWED_ORIGINS=https://$DOMAIN
+BASE_URL=$BASE_URL
+ALLOWED_ORIGINS=$BASE_URL
 RATE_LIMIT_WINDOW_MS=900000
 RATE_LIMIT_MAX=100
 LOGIN_RATE_LIMIT_MAX=10
 ENVEOF
-echo "  JWT secret generated and .env written"
+echo "  JWT secret generated, BASE_URL=$BASE_URL"
 
-# ── 7. Install backend deps + seed DB ────────────────────────
-echo "[7/9] Installing backend dependencies..."
+# ── 6. Install backend deps + seed DB ─────────────────────────
+echo "[7/8] Installing backend dependencies..."
 cd "$REPO_DIR/backend"
 npm install --omit=dev --no-audit --no-fund
 
 echo "  Setting up database..."
 node scripts/setup_sqlite.js
 
-# ── 8. Build frontend ────────────────────────────────────────
-echo "[8/9] Building frontend..."
+# ── 7. Build frontend ─────────────────────────────────────────
+echo "  Building frontend..."
 cd "$REPO_DIR/frontend"
 npm install --no-audit --no-fund
 npm run build
 
-# ── 9. PM2, nginx, SSL ──────────────────────────────────────
-echo "[9/9] Configuring services..."
+# ── 8. PM2 + nginx (HTTP only) ────────────────────────────────
+echo "[8/8] Configuring PM2 + nginx..."
 
 # PM2
 echo "  → Installing PM2..."
 npm install -g pm2
 
-echo "  → Generating PM2 ecosystem config..."
+echo "  → Starting app via PM2..."
 cat > "$REPO_DIR/deploy/ecosystem.config.js" << 'PM2EOF'
 module.exports = {
   apps: [{
@@ -133,33 +136,12 @@ pm2 start "$REPO_DIR/deploy/ecosystem.config.js" --env production
 pm2 save
 pm2 startup systemd -u root --hp /root 2>/dev/null || true
 
-# nginx config
-echo "  → Configuring nginx..."
+# nginx — HTTP only, reverse proxy to port 5000
+echo "  → Configuring nginx (HTTP)..."
 cat > /etc/nginx/sites-available/escape << NGINXEOF
 server {
     listen 80;
-    server_name $DOMAIN;
-
-    location / {
-        return 301 https://\$host\$request_uri;
-    }
-}
-
-server {
-    listen 443 ssl http2;
-    server_name $DOMAIN;
-
-    ssl_certificate     /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
-
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256;
-    ssl_prefer_server_ciphers on;
-
-    add_header Strict-Transport-Security "max-age=63072000" always;
-    add_header X-Content-Type-Options nosniff;
-    add_header X-Frame-Options DENY;
-    add_header X-XSS-Protection "1; mode=block";
+    server_name _;
 
     client_max_body_size 20M;
 
@@ -205,40 +187,57 @@ ufw default deny incoming
 ufw default allow outgoing
 ufw allow 22/tcp
 ufw allow 80/tcp
-ufw allow 443/tcp
 ufw --force enable
 
-# SSL
-echo "  → Obtaining SSL certificate..."
-certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --email "admin@$DOMAIN" || {
-  echo "  ⚠️  Certbot failed. Run manually:"
-  echo "     certbot --nginx -d $DOMAIN"
-}
+# ── Verify ────────────────────────────────────────────────────
+echo ""
+echo "  → Verifying deployment..."
+sleep 2
+
+# Check PM2
+if pm2 show escape-api &>/dev/null; then
+  echo "  ✅ PM2 process 'escape-api' is running"
+else
+  echo "  ❌ PM2 process not found — check 'pm2 status'"
+fi
+
+# Check backend responds
+if curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:5000/api/feed 2>/dev/null | grep -qE '^(200|401)$'; then
+  echo "  ✅ Backend API responds on http://127.0.0.1:5000"
+else
+  echo "  ⚠️  Backend API not responding yet — may need a moment"
+fi
+
+# Check nginx serves frontend
+if curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1/ 2>/dev/null | grep -q "200"; then
+  echo "  ✅ nginx serves frontend on port 80"
+else
+  echo "  ⚠️  nginx not serving frontend yet"
+fi
 
 echo ""
 echo "═══════════════════════════════════════════════"
 echo "  Setup complete!"
 echo "═══════════════════════════════════════════════"
-echo "  URL:     https://$DOMAIN"
 echo ""
-echo "  Accounts:"
+echo "  Access the app:"
+echo "    http://$PI_IP"
+echo ""
+echo "  Demo accounts:"
 echo "    Admin:  admin@escape.app / CoachPass1!"
 echo "    Coach:  alex@skate.academy / CoachPass1!"
 echo "    Student: student@skate.academy / StudentPass1!"
 echo ""
-echo "  Files:"
-echo "    Backend:  $REPO_DIR/backend"
-echo "    Frontend: $REPO_DIR/frontend/dist"
-echo "    DB:       $REPO_DIR/backend/data/escape.db"
-echo "    Logs:     $REPO_DIR/logs/"
+echo "  Login: enter email → check OTP in PM2 logs → enter code"
+echo "    pm2 logs escape-api --lines 20"
 echo ""
-echo "  Commands:"
+echo "  Management:"
 echo "    pm2 status              → Process status"
-echo "    pm2 logs escape-api     → View logs"
+echo "    pm2 logs escape-api     → View logs (OTP codes here)"
 echo "    pm2 restart escape-api  → Restart"
 echo "    pm2 stop escape-api     → Stop"
 echo ""
-echo "  Update:"
-echo "    cd $REPO_DIR && git pull && cd backend && npm install --omit=dev"
-echo "    && cd ../frontend && npm install && npm run build && pm2 restart escape-api"
+echo "  Next step (domain + SSL):"
+echo "    sudo bash $REPO_DIR/deploy/step2_domain.sh your-domain.com"
+echo ""
 echo "═══════════════════════════════════════════════"

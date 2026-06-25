@@ -1,7 +1,7 @@
 module.exports = {
   apps: [{
     name: 'escape-api',
-    script: 'server.js',
+    script: 'src/server.js',
     cwd: '/opt/escape/backend',
     env: {
       NODE_ENV: 'production',

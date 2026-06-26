@@ -11,7 +11,7 @@ const router = express.Router();
 const generateOTP = () => Math.floor(100000 + Math.random() * 900000).toString();
 
 const SKATEPARKS = [
-  'Play Arena', 'School of Raya',
+  'Skatepark Play Arena', 'School of Raya',
   'Burnside Skatepark, Portland', 'Venice Beach Skatepark, LA', 'Stoner Skate Plaza, LA',
   'Tompkins Square Park, NYC', 'LES Coleman Skatepark, NYC', 'FDR Skatepark, Philadelphia',
   'Louisville Extreme Park', 'Kona Skatepark, Jacksonville', 'Pier 7, San Francisco',

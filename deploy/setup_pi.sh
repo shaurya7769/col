@@ -104,8 +104,16 @@ ALLOWED_ORIGINS=$BASE_URL
 RATE_LIMIT_WINDOW_MS=900000
 RATE_LIMIT_MAX=100
 LOGIN_RATE_LIMIT_MAX=10
+
+# Gmail SMTP (set your credentials here)
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=
+SMTP_PASS=
+SMTP_FROM=
 ENVEOF
 echo "  ✓ .env created (BASE_URL=$BASE_URL)"
+echo "  ⚠ Edit $REPO_DIR/backend/.env to add SMTP_USER and SMTP_PASS before OTP emails will work."
 
 # ══════════════════════════════════════════════════════════════
 step "Install backend dependencies and seed database"
@@ -258,8 +266,9 @@ echo "    admin@escape.app      / CoachPass1!   (admin)"
 echo "    alex@skate.academy    / CoachPass1!   (coach)"
 echo "    student@skate.academy / StudentPass1! (student)"
 echo ""
-echo "  Login: enter email → pm2 logs | grep OTP → enter code"
-echo "    pm2 logs escape-api --lines 20"
+echo "  Login: enter email → check email for OTP → enter code"
+echo "    OTP emails sent via SMTP (configure SMTP_USER/PASS in .env)"
+echo "    If SMTP not set, run: pm2 logs escape-api --lines 20 | grep OTP"
 echo ""
 echo "  Commands:"
 echo "    pm2 status              → status"

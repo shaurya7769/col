@@ -1,9 +1,14 @@
-const { Resend } = require('resend');
+const nodemailer = require('nodemailer');
 
-const getResendClient = () => {
-  const key = process.env.RESEND_API_KEY;
-  if (!key) return null;
-  return new Resend(key);
+const getTransporter = () => {
+  const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS } = process.env;
+  if (!SMTP_USER || !SMTP_PASS) return null;
+  return nodemailer.createTransport({
+    host: SMTP_HOST || 'smtp.gmail.com',
+    port: parseInt(SMTP_PORT || '587', 10),
+    secure: false,
+    auth: { user: SMTP_USER, pass: SMTP_PASS },
+  });
 };
 
 const TEMPLATES = {
@@ -66,12 +71,12 @@ const OTP_HTML = (otpCode, purpose = 'login') => {
 };
 
 const sendOTP = async (toEmail, otpCode, purpose = 'login') => {
-  const resend = getResendClient();
+  const transporter = getTransporter();
   const tpl = TEMPLATES[purpose] || TEMPLATES.login;
 
-  if (!resend) {
+  if (!transporter) {
     console.warn('\n╔══════════════════════════════════════════╗');
-    console.warn('║  EMAIL NOT CONFIGURED — DEV FALLBACK     ║');
+    console.warn('║  SMTP NOT CONFIGURED — DEV FALLBACK     ║');
     console.warn(`║  To: ${toEmail.padEnd(34)}║`);
     console.warn(`║  Purpose: ${(purpose || 'login').padEnd(27)}║`);
     console.warn(`║  OTP Code: ${otpCode.padEnd(26)}║`);
@@ -79,26 +84,21 @@ const sendOTP = async (toEmail, otpCode, purpose = 'login') => {
     return { success: true, simulated: true };
   }
 
-  const fromAddress = process.env.RESEND_FROM_EMAIL || 'Escape <onboarding@resend.dev>';
+  const fromAddress = process.env.SMTP_FROM || SMTP_USER;
 
   try {
-    const { data, error } = await resend.emails.send({
-      from: fromAddress,
-      to: [toEmail],
+    const info = await transporter.sendMail({
+      from: `Escape <${fromAddress}>`,
+      to: toEmail,
       subject: tpl.subject(otpCode),
       html: OTP_HTML(otpCode, purpose),
     });
 
-    if (error) {
-      console.error('Resend API Error:', error);
-      console.warn('Falling back to simulated OTP delivery.');
-      return { success: true, simulated: true };
-    }
-
-    return { success: true, id: data?.id };
+    console.log(`✓ OTP email sent to ${toEmail} (id: ${info.messageId})`);
+    return { success: true, id: info.messageId };
   } catch (err) {
-    console.error('Mailer execution error:', err.message);
-    console.warn('Falling back to simulated OTP delivery due to exception.');
+    console.error('SMTP Error:', err.message);
+    console.warn('Falling back to simulated OTP delivery.');
     return { success: true, simulated: true };
   }
 };

@@ -19,7 +19,7 @@ async function setup() {
       'conversations', 'audit_logs', 'announcements', 'notifications', 'post_shares',
       'hashtags', 'post_mentions', 'reports', 'event_rsvps', 'events', 'progress_media',
       'practice_logs', 'coach_feedback', 'user_achievements', 'achievements',
-      'trick_verifications', 'session_attendance', 'goals', 'posts', 'batches', 'users'
+      'trick_verifications', 'session_attendance', 'goals', 'spots', 'posts', 'batches', 'users'
     ];
     db.db.pragma('foreign_keys = OFF');
     for (const t of tables) {
@@ -63,6 +63,9 @@ async function setup() {
       likes_count INTEGER DEFAULT 0,
       comments_count INTEGER DEFAULT 0,
       shares_count INTEGER DEFAULT 0,
+      latitude REAL,
+      longitude REAL,
+      spot_name TEXT,
       edited_at TEXT,
       is_private INTEGER DEFAULT 0,
       created_at TEXT DEFAULT (datetime('now'))
@@ -332,6 +335,18 @@ async function setup() {
       completed_at TEXT
     )`);
 
+    // 28. Spots Table
+    run(`CREATE TABLE IF NOT EXISTS spots (
+      id TEXT PRIMARY KEY DEFAULT (uuid_generate_v4()),
+      name TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      latitude REAL NOT NULL,
+      longitude REAL NOT NULL,
+      created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      media_url TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    )`);
+
     console.log('  → Creating indexes...');
 
     const indexes = [
@@ -360,6 +375,8 @@ async function setup() {
       'CREATE INDEX IF NOT EXISTS idx_goals_user_status ON goals(user_id, status)',
       'CREATE INDEX IF NOT EXISTS idx_hashtags_tag ON hashtags(tag)',
       'CREATE INDEX IF NOT EXISTS idx_progress_media_user ON progress_media(user_id, created_at DESC)',
+      'CREATE INDEX IF NOT EXISTS idx_spots_location ON spots(latitude, longitude)',
+      'CREATE INDEX IF NOT EXISTS idx_posts_geo ON posts(latitude, longitude)',
     ];
     indexes.forEach(i => run(i));
 
@@ -468,8 +485,8 @@ async function setup() {
     console.log('   Admin:      admin@escape.app / CoachPass1!');
     console.log('   Coach:      alex@skate.academy / CoachPass1!');
     console.log('   Student:    student@skate.academy / StudentPass1!');
-    console.log('\n⚠️  OTP codes will be logged to console (no email configured).');
-    console.log('   Use a test code of your choice or check server logs.\n');
+    console.log('\n⚠️  OTP codes sent via Gmail SMTP (if SMTP_USER/PASS configured in .env).');
+    console.log('   Falls back to console logging if SMTP not set.\n');
 
   } catch (err) {
     console.error('\n❌ Setup failed:', err.message, '\n');
